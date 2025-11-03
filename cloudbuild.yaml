@@ -21,7 +21,7 @@ steps:
     args:
       - 'run'
       - 'deploy'
-      - 'insights-travelintelligence-site'
+      - 'travelintelligence-insights-site'
       - '--image'
       - 'gcr.io/$PROJECT_ID/insights-travelintelligence:$BUILD_ID'
       - '--region'
@@ -42,7 +42,7 @@ steps:
       - '--timeout'
       - '300'
       - '--set-env-vars'
-      - 'NODE_ENV=production,USE_FIRESTORE=true,RP_ID=insights.travelintelligence.club,RP_NAME=Travel Intelligence Club Insights,ORIGIN=https://insights.travelintelligence.club,BASE_URL=https://insights.travelintelligence.club,GHOST_API_URL=https://insights.travelintelligence.club,GCP_PROJECT_ID=$PROJECT_ID,GOOGLE_CLOUD_PROJECT=$PROJECT_ID,PORT=3002,ALLOWED_LABELS=builder,patron,buccaneer,explorer,insights-subscriber'
+      - 'NODE_ENV=production,USE_FIRESTORE=true,RP_ID=insights.travelintelligence.club,RP_NAME=Travel Intelligence Club Insights,ORIGIN=https://insights.travelintelligence.club,BASE_URL=https://insights.travelintelligence.club,GHOST_API_URL=https://insights.travelintelligence.club,GCP_PROJECT_ID=$PROJECT_ID,GOOGLE_CLOUD_PROJECT=$PROJECT_ID,ALLOWED_LABELS=builder^:^patron^:^buccaneer^:^explorer^:^insights-subscriber'
       - '--set-secrets'
       - 'SESSION_SECRET=SESSION_SECRET:latest,BREVO_API_KEY=BREVO_API_KEY:latest,BREVO_FROM_EMAIL=BREVO_FROM_EMAIL:latest,BREVO_FROM_NAME=BREVO_FROM_NAME:latest,GHOST_ADMIN_API_KEY=GHOST_ADMIN_API_KEY:latest'
 

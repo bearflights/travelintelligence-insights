@@ -18,7 +18,7 @@
   "author": "",
   "license": "ISC",
   "dependencies": {
-    "@bear/shared-auth-lib": "file:../../shared-auth-lib",
+    "@bear/sso": "file:../../bear.flights/sso",
     "axios": "^1.6.0",
     "better-sqlite3": "^9.2.2",
     "cors": "^2.8.5",

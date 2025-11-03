@@ -12,7 +12,7 @@ const {
     createSessionMiddleware,
     createAuthSession,
     destroySession
-} = require('@bear/shared-auth-lib');
+} = require('@bear/sso');
 
 // Use Firestore for production (Cloud Run), fallback to SQLite for local dev
 const USE_FIRESTORE = process.env.NODE_ENV === 'production' || process.env.USE_FIRESTORE === 'true';
@@ -20,7 +20,7 @@ const USE_FIRESTORE = process.env.NODE_ENV === 'production' || process.env.USE_F
 // Conditionally require database layer
 let passkeyQueries, challengeQueries, verificationCodeQueries;
 if (USE_FIRESTORE) {
-    const firestoreDb = require('@bear/shared-auth-lib/lib/firestore-db');
+    const firestoreDb = require('@bear/sso/lib/firestore-db');
     passkeyQueries = firestoreDb.passkeyQueries;
     challengeQueries = firestoreDb.challengeQueries;
     verificationCodeQueries = firestoreDb.verificationCodeQueries;

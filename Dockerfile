@@ -7,8 +7,11 @@ WORKDIR /app
 # Copy package files
 COPY package*.json ./
 
+# Copy lib directory for local dependencies
+COPY lib/ ./lib/
+
 # Install dependencies
-RUN npm ci --only=production
+RUN npm ci --omit=dev
 
 # Copy application files
 COPY . .
