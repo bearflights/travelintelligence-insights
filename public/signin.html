@@ -1,0 +1,448 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sign In - Travel Intelligence Club Insights</title>
+    <script src="https://unpkg.com/@simplewebauthn/browser@9.0.1/dist/bundle/index.umd.min.js"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+        }
+
+        .container {
+            background: white;
+            border-radius: 16px;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+            max-width: 450px;
+            width: 100%;
+            padding: 40px;
+        }
+
+        h1 {
+            font-size: 28px;
+            font-weight: 700;
+            color: #1a202c;
+            margin-bottom: 8px;
+            text-align: center;
+        }
+
+        .subtitle {
+            color: #718096;
+            text-align: center;
+            margin-bottom: 32px;
+            font-size: 14px;
+        }
+
+        .form-group {
+            margin-bottom: 20px;
+        }
+
+        label {
+            display: block;
+            font-weight: 600;
+            color: #4a5568;
+            margin-bottom: 8px;
+            font-size: 14px;
+        }
+
+        input {
+            width: 100%;
+            padding: 12px 16px;
+            border: 2px solid #e2e8f0;
+            border-radius: 8px;
+            font-size: 16px;
+            transition: all 0.2s;
+        }
+
+        input:focus {
+            outline: none;
+            border-color: #667eea;
+            box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
+        }
+
+        button {
+            width: 100%;
+            padding: 14px;
+            background: #667eea;
+            color: white;
+            border: none;
+            border-radius: 8px;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        button:hover:not(:disabled) {
+            background: #5568d3;
+            transform: translateY(-1px);
+            box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);
+        }
+
+        button:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+        }
+
+        .divider {
+            display: flex;
+            align-items: center;
+            margin: 24px 0;
+            color: #a0aec0;
+            font-size: 14px;
+        }
+
+        .divider::before,
+        .divider::after {
+            content: '';
+            flex: 1;
+            height: 1px;
+            background: #e2e8f0;
+        }
+
+        .divider::before {
+            margin-right: 12px;
+        }
+
+        .divider::after {
+            margin-left: 12px;
+        }
+
+        .passkey-btn {
+            background: #48bb78;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+        }
+
+        .passkey-btn:hover:not(:disabled) {
+            background: #38a169;
+        }
+
+        .message {
+            padding: 12px 16px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+            font-size: 14px;
+        }
+
+        .message.error {
+            background: #fed7d7;
+            color: #c53030;
+            border: 1px solid #fc8181;
+        }
+
+        .message.success {
+            background: #c6f6d5;
+            color: #276749;
+            border: 1px solid #9ae6b4;
+        }
+
+        .message.info {
+            background: #bee3f8;
+            color: #2c5282;
+            border: 1px solid #90cdf4;
+        }
+
+        .hidden {
+            display: none;
+        }
+
+        .register-link {
+            text-align: center;
+            margin-top: 24px;
+            color: #718096;
+            font-size: 14px;
+        }
+
+        .register-link a {
+            color: #667eea;
+            text-decoration: none;
+            font-weight: 600;
+        }
+
+        .register-link a:hover {
+            text-decoration: underline;
+        }
+
+        .spinner {
+            border: 2px solid #f3f3f3;
+            border-top: 2px solid #667eea;
+            border-radius: 50%;
+            width: 16px;
+            height: 16px;
+            animation: spin 1s linear infinite;
+            display: inline-block;
+            margin-left: 8px;
+        }
+
+        .helper-text {
+            text-align: center;
+            color: #718096;
+            font-size: 13px;
+            margin-top: 12px;
+            line-height: 1.5;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🐻 Sign In to Bear</h1>
+        <p class="subtitle">One account for News, Docs, and Insights</p>
+
+        <div id="message" class="message hidden"></div>
+
+        <!-- Passkey Sign In (Primary - No Email Required) -->
+        <button id="passkeyBtn" class="passkey-btn">
+            <span>🔐</span>
+            <span>Sign In with Passkey</span>
+        </button>
+
+        <div class="divider">OR</div>
+
+        <!-- Email Form -->
+        <div id="emailForm">
+            <div class="form-group">
+                <label for="email">Email Address</label>
+                <input type="email" id="email" placeholder="you@example.com" required>
+            </div>
+
+            <button id="continueBtn">Continue with Email</button>
+            <p class="helper-text">We'll send you a verification code</p>
+        </div>
+
+        <!-- Verification Code Form -->
+        <div id="codeForm" class="hidden">
+            <div class="form-group">
+                <label for="code">Verification Code</label>
+                <input type="text" id="code" placeholder="000000" maxlength="6" pattern="[0-9]{6}" required>
+            </div>
+            <button id="verifyCodeBtn">Verify & Sign In</button>
+            <button id="backBtn" style="background: #a0aec0; margin-top: 12px;">Back</button>
+        </div>
+
+        <div class="register-link">
+            Don't have access? <a href="https://travelintelligence.club">Join Travel Intelligence Club</a>
+        </div>
+    </div>
+
+    <script>
+        const emailForm = document.getElementById('emailForm');
+        const codeForm = document.getElementById('codeForm');
+        const messageDiv = document.getElementById('message');
+
+        const emailInput = document.getElementById('email');
+        const codeInput = document.getElementById('code');
+
+        const continueBtn = document.getElementById('continueBtn');
+        const verifyCodeBtn = document.getElementById('verifyCodeBtn');
+        const backBtn = document.getElementById('backBtn');
+        const passkeyBtn = document.getElementById('passkeyBtn');
+
+        let currentEmail = '';
+
+        function showMessage(text, type = 'info') {
+            messageDiv.textContent = text;
+            messageDiv.className = `message ${type}`;
+            messageDiv.classList.remove('hidden');
+        }
+
+        function hideMessage() {
+            messageDiv.classList.add('hidden');
+        }
+
+        function setLoading(button, loading) {
+            button.disabled = loading;
+            if (loading) {
+                button.innerHTML += '<span class="spinner"></span>';
+            } else {
+                const spinner = button.querySelector('.spinner');
+                if (spinner) spinner.remove();
+            }
+        }
+
+        // Continue with email - send verification code
+        continueBtn.addEventListener('click', async () => {
+            const email = emailInput.value.trim();
+
+            if (!email) {
+                showMessage('Please enter your email address', 'error');
+                return;
+            }
+
+            setLoading(continueBtn, true);
+            hideMessage();
+
+            try {
+                const response = await fetch('/api/auth/send-verification', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ email })
+                });
+
+                const data = await response.json();
+
+                if (response.ok) {
+                    currentEmail = email;
+                    emailForm.classList.add('hidden');
+                    codeForm.classList.remove('hidden');
+                    showMessage('Verification code sent! Check your email.', 'success');
+                } else {
+                    showMessage(data.message || data.error || 'Failed to send code', 'error');
+
+                    // If user not found, show redirect option
+                    if (response.status === 404 && data.redirectUrl) {
+                        setTimeout(() => {
+                            window.location.href = data.redirectUrl;
+                        }, 3000);
+                    }
+                }
+            } catch (error) {
+                console.error('Error:', error);
+                showMessage('Network error. Please try again.', 'error');
+            } finally {
+                setLoading(continueBtn, false);
+            }
+        });
+
+        // Verify code
+        verifyCodeBtn.addEventListener('click', async () => {
+            const code = codeInput.value.trim();
+
+            if (!code || code.length !== 6) {
+                showMessage('Please enter a valid 6-digit code', 'error');
+                return;
+            }
+
+            setLoading(verifyCodeBtn, true);
+            hideMessage();
+
+            try {
+                const response = await fetch('/api/auth/verify-code', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ email: currentEmail, code })
+                });
+
+                const data = await response.json();
+
+                if (response.ok) {
+                    showMessage('Success! Redirecting...', 'success');
+                    setTimeout(() => {
+                        window.location.href = '/';
+                    }, 1000);
+                } else {
+                    showMessage(data.message || data.error || 'Invalid code', 'error');
+
+                    // If access denied, show redirect option
+                    if (response.status === 403 && data.redirectUrl) {
+                        setTimeout(() => {
+                            window.location.href = data.redirectUrl;
+                        }, 3000);
+                    }
+                }
+            } catch (error) {
+                console.error('Error:', error);
+                showMessage('Network error. Please try again.', 'error');
+            } finally {
+                setLoading(verifyCodeBtn, false);
+            }
+        });
+
+        // Back to email form
+        backBtn.addEventListener('click', () => {
+            codeForm.classList.add('hidden');
+            emailForm.classList.remove('hidden');
+            codeInput.value = '';
+            hideMessage();
+        });
+
+        // Passkey authentication (No email required!)
+        passkeyBtn.addEventListener('click', async () => {
+            setLoading(passkeyBtn, true);
+            hideMessage();
+
+            try {
+                // Start passkey authentication without email (discoverable credentials)
+                const startResponse = await fetch('/api/passkey/login-start', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({})
+                });
+
+                if (!startResponse.ok) {
+                    const data = await startResponse.json();
+                    showMessage(data.error || 'No passkey found. Try using email verification instead.', 'error');
+                    setLoading(passkeyBtn, false);
+                    return;
+                }
+
+                const options = await startResponse.json();
+
+                // Get credential from browser (will prompt user to select passkey)
+                const credential = await window.SimpleWebAuthnBrowser.startAuthentication(options);
+
+                // Verify credential (no email needed - credential contains user info)
+                const finishResponse = await fetch('/api/passkey/login-finish', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ credential })
+                });
+
+                const data = await finishResponse.json();
+
+                if (finishResponse.ok) {
+                    showMessage('Success! Redirecting...', 'success');
+                    setTimeout(() => {
+                        window.location.href = '/';
+                    }, 1000);
+                } else {
+                    showMessage(data.message || data.error || 'Authentication failed', 'error');
+
+                    // If access denied, show redirect option
+                    if (finishResponse.status === 403 && data.redirectUrl) {
+                        setTimeout(() => {
+                            window.location.href = data.redirectUrl;
+                        }, 3000);
+                    }
+                }
+            } catch (error) {
+                console.error('Passkey error:', error);
+                showMessage(error.name === 'NotAllowedError'
+                    ? 'Passkey authentication cancelled'
+                    : 'No passkey found on this device. Try using email verification instead.', 'error');
+            } finally {
+                setLoading(passkeyBtn, false);
+            }
+        });
+
+        // Enter key handlers
+        emailInput.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') continueBtn.click();
+        });
+
+        codeInput.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') verifyCodeBtn.click();
+        });
+    </script>
+</body>
+</html>

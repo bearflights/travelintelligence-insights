@@ -1,0 +1,222 @@
+const { Firestore } = require('@google-cloud/firestore');
+
+// Initialize Firestore
+// In Cloud Run, credentials are automatic via default service account
+// For local development, set GOOGLE_APPLICATION_CREDENTIALS env var
+const firestore = new Firestore({
+  projectId: process.env.GCP_PROJECT_ID || process.env.GOOGLE_CLOUD_PROJECT,
+});
+
+// Collection references
+const passkeysCollection = firestore.collection('passkeys');
+const challengesCollection = firestore.collection('challenges');
+const verificationCodesCollection = firestore.collection('verification_codes');
+
+// Create indexes (Firestore automatically indexes single fields)
+// Composite indexes can be created via firestore.indexes.json if needed
+
+// Passkey functions (async versions of SQLite queries)
+const passkeyQueries = {
+  /**
+   * Create a new passkey credential
+   * @param {string} email
+   * @param {string} credentialId
+   * @param {string} publicKey
+   * @param {number} counter
+   * @param {string} transports - JSON string
+   * @param {string} deviceName
+   */
+  createPasskey: async (email, credentialId, publicKey, counter, transports, deviceName) => {
+    const docRef = passkeysCollection.doc();
+    await docRef.set({
+      id: docRef.id,
+      email,
+      credential_id: credentialId,
+      public_key: publicKey,
+      counter: counter || 0,
+      transports: transports || null,
+      device_name: deviceName || null,
+      created_at: Firestore.Timestamp.now(),
+    });
+    return { id: docRef.id };
+  },
+
+  /**
+   * Find passkey by credential ID
+   * @param {string} credentialId
+   * @returns {Promise<object|null>}
+   */
+  findPasskeyByCredentialId: async (credentialId) => {
+    const snapshot = await passkeysCollection
+      .where('credential_id', '==', credentialId)
+      .limit(1)
+      .get();
+
+    if (snapshot.empty) {
+      return null;
+    }
+
+    return snapshot.docs[0].data();
+  },
+
+  /**
+   * Get all passkeys for an email address
+   * @param {string} email
+   * @returns {Promise<Array>}
+   */
+  getEmailPasskeys: async (email) => {
+    const snapshot = await passkeysCollection
+      .where('email', '==', email)
+      .get();
+
+    return snapshot.docs.map(doc => doc.data());
+  },
+
+  /**
+   * Update passkey counter (for replay attack prevention)
+   * @param {number} counter
+   * @param {string} credentialId
+   */
+  updatePasskeyCounter: async (counter, credentialId) => {
+    const snapshot = await passkeysCollection
+      .where('credential_id', '==', credentialId)
+      .limit(1)
+      .get();
+
+    if (!snapshot.empty) {
+      await snapshot.docs[0].ref.update({ counter });
+    }
+  },
+
+  /**
+   * Delete a passkey by ID
+   * @param {string} id - Document ID
+   */
+  deletePasskey: async (id) => {
+    await passkeysCollection.doc(id).delete();
+  },
+};
+
+// Challenge functions (for WebAuthn verification)
+const challengeQueries = {
+  /**
+   * Store a challenge for email verification
+   * Email is used as document ID for easy upsert
+   * @param {string} email
+   * @param {string} challenge
+   */
+  storeChallenge: async (email, challenge) => {
+    await challengesCollection.doc(email).set({
+      email,
+      challenge,
+      created_at: Firestore.Timestamp.now(),
+    });
+  },
+
+  /**
+   * Get challenge for email if not expired (10 minutes)
+   * @param {string} email
+   * @returns {Promise<object|null>}
+   */
+  getChallenge: async (email) => {
+    const doc = await challengesCollection.doc(email).get();
+
+    if (!doc.exists) {
+      return null;
+    }
+
+    const data = doc.data();
+    const createdAt = data.created_at.toDate();
+    const now = new Date();
+    const tenMinutesAgo = new Date(now.getTime() - 10 * 60 * 1000);
+
+    // Check if challenge is still valid (created within last 10 minutes)
+    if (createdAt < tenMinutesAgo) {
+      // Challenge expired, delete it
+      await challengesCollection.doc(email).delete();
+      return null;
+    }
+
+    return data;
+  },
+
+  /**
+   * Delete challenge for an email
+   * @param {string} email
+   */
+  deleteChallenge: async (email) => {
+    await challengesCollection.doc(email).delete();
+  },
+
+  /**
+   * Cleanup expired challenges (older than 10 minutes)
+   * Run this periodically or as needed
+   */
+  cleanupExpiredChallenges: async () => {
+    const tenMinutesAgo = new Date(Date.now() - 10 * 60 * 1000);
+    const snapshot = await challengesCollection
+      .where('created_at', '<', Firestore.Timestamp.fromDate(tenMinutesAgo))
+      .get();
+
+    const batch = firestore.batch();
+    snapshot.docs.forEach(doc => {
+      batch.delete(doc.ref);
+    });
+
+    await batch.commit();
+    return snapshot.size;
+  },
+};
+
+// Verification code functions (for email-based authentication)
+const verificationCodeQueries = {
+  /**
+   * Store a verification code for email
+   * Email is used as document ID for easy upsert
+   * @param {string} email
+   * @param {string} code
+   * @param {number} expiresAt - timestamp in milliseconds
+   */
+  storeCode: async (email, code, expiresAt) => {
+    await verificationCodesCollection.doc(email).set({
+      email,
+      code,
+      expiresAt,
+      createdAt: Firestore.Timestamp.now(),
+    });
+  },
+
+  /**
+   * Get verification code for email if not expired
+   * @param {string} email
+   * @returns {Promise<object|null>}
+   */
+  getCode: async (email) => {
+    const doc = await verificationCodesCollection.doc(email).get();
+
+    if (!doc.exists) {
+      return null;
+    }
+
+    const data = doc.data();
+    return {
+      code: data.code,
+      expiresAt: data.expiresAt,
+    };
+  },
+
+  /**
+   * Delete verification code for an email
+   * @param {string} email
+   */
+  deleteCode: async (email) => {
+    await verificationCodesCollection.doc(email).delete();
+  },
+};
+
+module.exports = {
+  firestore,
+  passkeyQueries,
+  challengeQueries,
+  verificationCodeQueries,
+};

@@ -1,0 +1,38 @@
+{
+  "name": "insights-travelintelligence",
+  "version": "1.0.0",
+  "description": "Authentication gateway for Travel Intelligence Club Insights (Ghost CMS)",
+  "main": "app.js",
+  "scripts": {
+    "start": "node app.js",
+    "dev": "nodemon app.js",
+    "test": "node __tests__/auth.test.js"
+  },
+  "keywords": [
+    "ghost",
+    "authentication",
+    "passkey",
+    "webauthn",
+    "travelintelligence"
+  ],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@google-cloud/firestore": "^7.1.0",
+    "@sendinblue/client": "^3.3.1",
+    "@simplewebauthn/server": "^9.0.3",
+    "axios": "^1.6.0",
+    "better-sqlite3": "^9.2.2",
+    "cors": "^2.8.5",
+    "dotenv": "^16.3.1",
+    "express": "^4.18.2",
+    "express-session": "^1.17.3",
+    "jsonwebtoken": "^9.0.2"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.1"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

@@ -1,0 +1,653 @@
+const express = require('express');
+const cors = require('cors');
+const path = require('path');
+const session = require('express-session');
+const axios = require('axios');
+const { getGhostAPI } = require('./ghost-api');
+
+// Use Firestore for production (Cloud Run), fallback to SQLite for local dev
+const USE_FIRESTORE = process.env.NODE_ENV === 'production' || process.env.USE_FIRESTORE === 'true';
+
+// Conditionally require database layer
+let passkeyQueries, challengeQueries, verificationCodeQueries;
+if (USE_FIRESTORE) {
+    const firestoreDb = require('./lib/firestore-db');
+    passkeyQueries = firestoreDb.passkeyQueries;
+    challengeQueries = firestoreDb.challengeQueries;
+    verificationCodeQueries = firestoreDb.verificationCodeQueries;
+} else {
+    const sqliteDb = require('./lib/db');
+    passkeyQueries = sqliteDb.passkeyQueries;
+    challengeQueries = sqliteDb.challengeQueries;
+    verificationCodeQueries = sqliteDb.verificationCodeQueries;
+}
+
+const {
+    generateRegistrationOptions,
+    verifyRegistrationResponse,
+    generateAuthenticationOptions,
+    verifyAuthenticationResponse,
+} = require('@simplewebauthn/server');
+
+// Create Express app
+function createApp(testMode = false) {
+    const app = express();
+
+    // Load environment variables
+    if (testMode) {
+        require('dotenv').config({ path: '.env.test' });
+    } else {
+        require('dotenv').config();
+    }
+
+    // Configuration
+    const RP_ID = process.env.RP_ID || 'insights.travelintelligence.club';
+    const RP_NAME = process.env.RP_NAME || 'Travel Intelligence Club Insights';
+    const ORIGIN = process.env.ORIGIN || 'https://insights.travelintelligence.club';
+    const GHOST_CONTENT_URL = process.env.GHOST_API_URL || 'https://insights.travelintelligence.club';
+
+    // Labels that grant access to insights (configurable)
+    const ALLOWED_LABELS = process.env.ALLOWED_LABELS
+        ? process.env.ALLOWED_LABELS.split(',').map(l => l.trim())
+        : ['builder', 'patron', 'buccaneer', 'explorer', 'insights-subscriber'];
+
+    // Middleware
+    app.use(cors({
+        credentials: true,
+        origin: true,
+        methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+        allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With']
+    }));
+    app.use(express.json());
+
+    // Session middleware
+    app.use(session({
+        secret: process.env.SESSION_SECRET || 'insights-secret-change-in-production',
+        resave: false,
+        saveUninitialized: false,
+        rolling: true,
+        cookie: {
+            secure: process.env.NODE_ENV === 'production',
+            maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
+            httpOnly: true
+        }
+    }));
+
+    // Static file serving for auth pages
+    app.use('/static', express.static(path.join(__dirname, 'public')));
+
+    // Brevo client setup (mock in test mode)
+    let apiInstance, SibApiV3Sdk;
+    if (!testMode) {
+        SibApiV3Sdk = require('@sendinblue/client');
+        apiInstance = new SibApiV3Sdk.TransactionalEmailsApi();
+        let apiKey = apiInstance.authentications['apiKey'];
+        apiKey.apiKey = process.env.BREVO_API_KEY;
+    }
+
+    // Utility functions
+    function generateVerificationCode() {
+        return Math.floor(100000 + Math.random() * 900000).toString();
+    }
+
+    // Send verification email via Brevo
+    async function sendVerificationEmail(email, name, code) {
+        if (testMode) {
+            console.log(`[TEST] Sending email to ${email} with code ${code}`);
+            return { messageId: 'test-message-id' };
+        }
+
+        const sendSmtpEmail = new SibApiV3Sdk.SendSmtpEmail();
+
+        sendSmtpEmail.subject = "Your Travel Intelligence Club Insights Verification Code";
+        sendSmtpEmail.htmlContent = `
+            <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+                <div style="background-color: #f5f5f5; padding: 40px; border-radius: 10px;">
+                    <h2 style="color: #333; margin-bottom: 20px;">Verify Your Email</h2>
+                    <p style="font-size: 16px; color: #666; margin-bottom: 30px;">Hi ${name},</p>
+                    <p style="font-size: 16px; color: #666; margin-bottom: 20px;">Please use the verification code below to sign in to Travel Intelligence Club Insights:</p>
+                    <div style="text-align: center; margin: 30px 0;">
+                        <div style="background-color: #fff; padding: 20px; border-radius: 8px; font-size: 32px; font-weight: bold; letter-spacing: 8px; color: #333; border: 2px solid #333; display: inline-block;">
+                            ${code}
+                        </div>
+                    </div>
+                    <p style="font-size: 14px; color: #999; text-align: center;">This code will expire in 10 minutes.</p>
+                </div>
+            </div>
+        `;
+        sendSmtpEmail.sender = {
+            "name": process.env.BREVO_FROM_NAME || "Travel Intelligence Club",
+            "email": process.env.BREVO_FROM_EMAIL
+        };
+        sendSmtpEmail.to = [{ "email": email, "name": name }];
+
+        try {
+            const result = await apiInstance.sendTransacEmail(sendSmtpEmail);
+            console.log('Verification email sent successfully:', email);
+            return result;
+        } catch (error) {
+            console.error('Error sending email:', error);
+            throw error;
+        }
+    }
+
+    // Middleware to check if user is authenticated
+    function requireAuth(req, res, next) {
+        if (req.session && req.session.authenticated && req.session.userEmail) {
+            return next();
+        }
+
+        // Redirect to sign-in page
+        res.redirect('/signin');
+    }
+
+    // Middleware to check if user has required labels
+    function requireLabels(req, res, next) {
+        if (!req.session || !req.session.userLabels) {
+            return res.status(403).json({
+                error: 'Access denied',
+                message: 'You do not have permission to access this content.',
+                redirectUrl: 'https://travelintelligence.club'
+            });
+        }
+
+        const userLabels = req.session.userLabels || [];
+        const hasAccess = userLabels.some(label => ALLOWED_LABELS.includes(label));
+
+        if (!hasAccess) {
+            return res.status(403).json({
+                error: 'Access denied',
+                message: 'You need to join Travel Intelligence Club to access insights.',
+                redirectUrl: 'https://travelintelligence.club'
+            });
+        }
+
+        next();
+    }
+
+    // ========================================
+    // AUTH ROUTES
+    // ========================================
+
+    // Sign-in page
+    app.get('/signin', (req, res) => {
+        if (req.session && req.session.authenticated) {
+            return res.redirect('/');
+        }
+        res.sendFile(path.join(__dirname, 'public', 'signin.html'));
+    });
+
+    // Send verification code
+    app.post('/api/auth/send-verification', async (req, res) => {
+        try {
+            const { email, name } = req.body;
+
+            if (!email) {
+                return res.status(400).json({ error: 'Email is required' });
+            }
+
+            // Check if user exists in Ghost
+            const ghostAPI = getGhostAPI();
+            const member = await ghostAPI.getMemberByEmail(email);
+
+            if (!member) {
+                return res.status(404).json({
+                    error: 'User not found',
+                    message: 'Please sign up at travelintelligence.club first',
+                    redirectUrl: 'https://travelintelligence.club'
+                });
+            }
+
+            // Generate and store verification code
+            const code = generateVerificationCode();
+            const expiresAt = Date.now() + (10 * 60 * 1000); // 10 minutes
+
+            if (USE_FIRESTORE) {
+                await verificationCodeQueries.storeCode(email, code, expiresAt);
+            } else {
+                verificationCodeQueries.storeCode(email, code, expiresAt);
+            }
+
+            // Send email
+            await sendVerificationEmail(email, name || member.name, code);
+
+            res.json({ success: true, message: 'Verification code sent' });
+        } catch (error) {
+            console.error('Error sending verification code:', error);
+            res.status(500).json({ error: 'Failed to send verification code' });
+        }
+    });
+
+    // Verify code and create session
+    app.post('/api/auth/verify-code', async (req, res) => {
+        try {
+            const { email, code } = req.body;
+
+            if (!email || !code) {
+                return res.status(400).json({ error: 'Email and code are required' });
+            }
+
+            // Verify code
+            const storedData = USE_FIRESTORE
+                ? await verificationCodeQueries.getCode(email)
+                : verificationCodeQueries.getCode(email);
+
+            if (!storedData) {
+                return res.status(400).json({ error: 'Invalid or expired code' });
+            }
+
+            if (storedData.code !== code) {
+                return res.status(400).json({ error: 'Invalid code' });
+            }
+
+            if (storedData.expiresAt < Date.now()) {
+                if (USE_FIRESTORE) {
+                    await verificationCodeQueries.deleteCode(email);
+                } else {
+                    verificationCodeQueries.deleteCode(email);
+                }
+                return res.status(400).json({ error: 'Code has expired' });
+            }
+
+            // Delete used code
+            if (USE_FIRESTORE) {
+                await verificationCodeQueries.deleteCode(email);
+            } else {
+                verificationCodeQueries.deleteCode(email);
+            }
+
+            // Get user from Ghost
+            const ghostAPI = getGhostAPI();
+            const member = await ghostAPI.getMemberByEmail(email);
+
+            if (!member) {
+                return res.status(404).json({ error: 'User not found' });
+            }
+
+            // Extract label names
+            const userLabels = (member.labels || []).map(l => l.name);
+
+            // Check if user has access
+            const hasAccess = userLabels.some(label => ALLOWED_LABELS.includes(label));
+
+            if (!hasAccess) {
+                return res.status(403).json({
+                    error: 'Access denied',
+                    message: 'You need to join Travel Intelligence Club to access insights.',
+                    redirectUrl: 'https://travelintelligence.club',
+                    userLabels
+                });
+            }
+
+            // Create session
+            req.session.authenticated = true;
+            req.session.userEmail = member.email;
+            req.session.userName = member.name;
+            req.session.userLabels = userLabels;
+
+            res.json({
+                success: true,
+                message: 'Authentication successful',
+                user: {
+                    email: member.email,
+                    name: member.name,
+                    labels: userLabels
+                }
+            });
+        } catch (error) {
+            console.error('Error verifying code:', error);
+            res.status(500).json({ error: 'Failed to verify code' });
+        }
+    });
+
+    // ========================================
+    // PASSKEY ROUTES
+    // ========================================
+
+    // Start passkey registration
+    app.post('/api/passkey/register-start', async (req, res) => {
+        try {
+            if (!req.session || !req.session.authenticated) {
+                return res.status(401).json({ error: 'Not authenticated' });
+            }
+
+            const { email, userName } = req.body;
+            const userEmail = email || req.session.userEmail;
+            const displayName = userName || req.session.userName || userEmail;
+
+            // Get existing passkeys for this user
+            const existingPasskeys = USE_FIRESTORE
+                ? await passkeyQueries.getEmailPasskeys(userEmail)
+                : passkeyQueries.getEmailPasskeys.all(userEmail);
+
+            const options = await generateRegistrationOptions({
+                rpName: RP_NAME,
+                rpID: RP_ID,
+                userID: userEmail,
+                userName: userEmail,
+                userDisplayName: displayName,
+                attestationType: 'none',
+                excludeCredentials: existingPasskeys.map(pk => ({
+                    id: Buffer.from(pk.credentialId, 'base64'),
+                    type: 'public-key',
+                    transports: pk.transports ? JSON.parse(pk.transports) : undefined,
+                })),
+                authenticatorSelection: {
+                    residentKey: 'preferred',
+                    userVerification: 'preferred',
+                    authenticatorAttachment: 'platform',
+                },
+            });
+
+            // Store challenge
+            if (USE_FIRESTORE) {
+                await challengeQueries.storeChallenge(userEmail, options.challenge);
+            } else {
+                challengeQueries.storeChallenge.run(userEmail, options.challenge);
+            }
+
+            res.json(options);
+        } catch (error) {
+            console.error('Error generating registration options:', error);
+            res.status(500).json({ error: 'Failed to start passkey registration' });
+        }
+    });
+
+    // Finish passkey registration
+    app.post('/api/passkey/register-finish', async (req, res) => {
+        try {
+            if (!req.session || !req.session.authenticated) {
+                return res.status(401).json({ error: 'Not authenticated' });
+            }
+
+            const { email, credential } = req.body;
+            const userEmail = email || req.session.userEmail;
+
+            // Get stored challenge
+            const challengeData = USE_FIRESTORE
+                ? await challengeQueries.getChallenge(userEmail)
+                : challengeQueries.getChallenge.get(userEmail);
+
+            if (!challengeData) {
+                return res.status(400).json({ error: 'Challenge not found or expired' });
+            }
+
+            // Verify registration
+            const verification = await verifyRegistrationResponse({
+                response: credential,
+                expectedChallenge: challengeData.challenge,
+                expectedOrigin: ORIGIN,
+                expectedRPID: RP_ID,
+            });
+
+            if (!verification.verified || !verification.registrationInfo) {
+                return res.status(400).json({ error: 'Failed to verify passkey registration' });
+            }
+
+            // Store credential
+            const { credentialPublicKey, credentialID, counter } = verification.registrationInfo;
+
+            if (USE_FIRESTORE) {
+                await passkeyQueries.createPasskey(
+                    userEmail,
+                    Buffer.from(credentialID).toString('base64'),
+                    Buffer.from(credentialPublicKey).toString('base64'),
+                    counter,
+                    JSON.stringify(credential.response.transports || []),
+                    null
+                );
+            } else {
+                passkeyQueries.createPasskey.run(
+                    userEmail,
+                    Buffer.from(credentialID).toString('base64'),
+                    Buffer.from(credentialPublicKey).toString('base64'),
+                    counter,
+                    JSON.stringify(credential.response.transports || []),
+                    null
+                );
+            }
+
+            // Delete challenge
+            if (USE_FIRESTORE) {
+                await challengeQueries.deleteChallenge(userEmail);
+            } else {
+                challengeQueries.deleteChallenge.run(userEmail);
+            }
+
+            res.json({ success: true, message: 'Passkey registered successfully' });
+        } catch (error) {
+            console.error('Error finishing passkey registration:', error);
+            res.status(500).json({ error: 'Failed to complete passkey registration' });
+        }
+    });
+
+    // Start passkey authentication
+    app.post('/api/passkey/login-start', async (req, res) => {
+        try {
+            const { email } = req.body;
+
+            if (!email) {
+                return res.status(400).json({ error: 'Email is required' });
+            }
+
+            // Get user's passkeys
+            const passkeys = USE_FIRESTORE
+                ? await passkeyQueries.getEmailPasskeys(email)
+                : passkeyQueries.getEmailPasskeys.all(email);
+
+            if (passkeys.length === 0) {
+                return res.status(404).json({ error: 'No passkeys found for this email' });
+            }
+
+            const options = await generateAuthenticationOptions({
+                rpID: RP_ID,
+                allowCredentials: passkeys.map(pk => ({
+                    id: Buffer.from(pk.credentialId, 'base64'),
+                    type: 'public-key',
+                    transports: pk.transports ? JSON.parse(pk.transports) : undefined,
+                })),
+                userVerification: 'preferred',
+            });
+
+            // Store challenge
+            if (USE_FIRESTORE) {
+                await challengeQueries.storeChallenge(email, options.challenge);
+            } else {
+                challengeQueries.storeChallenge.run(email, options.challenge);
+            }
+
+            res.json(options);
+        } catch (error) {
+            console.error('Error generating authentication options:', error);
+            res.status(500).json({ error: 'Failed to start passkey authentication' });
+        }
+    });
+
+    // Finish passkey authentication
+    app.post('/api/passkey/login-finish', async (req, res) => {
+        try {
+            const { email, credential } = req.body;
+
+            if (!email) {
+                return res.status(400).json({ error: 'Email is required' });
+            }
+
+            // Get stored challenge
+            const challengeData = USE_FIRESTORE
+                ? await challengeQueries.getChallenge(email)
+                : challengeQueries.getChallenge.get(email);
+
+            if (!challengeData) {
+                return res.status(400).json({ error: 'Challenge not found or expired' });
+            }
+
+            // Get passkey
+            const credentialId = Buffer.from(credential.rawId, 'base64').toString('base64');
+            const passkey = USE_FIRESTORE
+                ? await passkeyQueries.findPasskeyByCredentialId(credentialId)
+                : passkeyQueries.findPasskeyByCredentialId.get(credentialId);
+
+            if (!passkey || passkey.email !== email) {
+                return res.status(404).json({ error: 'Passkey not found' });
+            }
+
+            // Verify authentication
+            const verification = await verifyAuthenticationResponse({
+                response: credential,
+                expectedChallenge: challengeData.challenge,
+                expectedOrigin: ORIGIN,
+                expectedRPID: RP_ID,
+                authenticator: {
+                    credentialID: Buffer.from(passkey.credentialId, 'base64'),
+                    credentialPublicKey: Buffer.from(passkey.publicKey, 'base64'),
+                    counter: passkey.counter,
+                },
+            });
+
+            if (!verification.verified) {
+                return res.status(400).json({ error: 'Failed to verify passkey' });
+            }
+
+            // Update counter
+            if (USE_FIRESTORE) {
+                await passkeyQueries.updatePasskeyCounter(verification.authenticationInfo.newCounter, credentialId);
+            } else {
+                passkeyQueries.updatePasskeyCounter.run(verification.authenticationInfo.newCounter, credentialId);
+            }
+
+            // Delete challenge
+            if (USE_FIRESTORE) {
+                await challengeQueries.deleteChallenge(email);
+            } else {
+                challengeQueries.deleteChallenge.run(email);
+            }
+
+            // Get user from Ghost
+            const ghostAPI = getGhostAPI();
+            const member = await ghostAPI.getMemberByEmail(email);
+
+            if (!member) {
+                return res.status(404).json({ error: 'User not found in system' });
+            }
+
+            // Extract label names
+            const userLabels = (member.labels || []).map(l => l.name);
+
+            // Check if user has access
+            const hasAccess = userLabels.some(label => ALLOWED_LABELS.includes(label));
+
+            if (!hasAccess) {
+                return res.status(403).json({
+                    error: 'Access denied',
+                    message: 'You need to join Travel Intelligence Club to access insights.',
+                    redirectUrl: 'https://travelintelligence.club',
+                    userLabels
+                });
+            }
+
+            // Create session
+            req.session.authenticated = true;
+            req.session.userEmail = member.email;
+            req.session.userName = member.name;
+            req.session.userLabels = userLabels;
+
+            res.json({
+                success: true,
+                message: 'Authentication successful',
+                user: {
+                    email: member.email,
+                    name: member.name,
+                    labels: userLabels
+                }
+            });
+        } catch (error) {
+            console.error('Error finishing passkey authentication:', error);
+            res.status(500).json({ error: 'Failed to complete passkey authentication' });
+        }
+    });
+
+    // Logout
+    app.post('/api/auth/logout', (req, res) => {
+        req.session.destroy((err) => {
+            if (err) {
+                return res.status(500).json({ error: 'Logout failed' });
+            }
+            res.clearCookie('connect.sid');
+            res.json({ success: true, message: 'Logged out successfully' });
+        });
+    });
+
+    // Check auth status
+    app.get('/api/auth/status', (req, res) => {
+        if (req.session && req.session.authenticated) {
+            res.json({
+                authenticated: true,
+                user: {
+                    email: req.session.userEmail,
+                    name: req.session.userName,
+                    labels: req.session.userLabels
+                }
+            });
+        } else {
+            res.json({ authenticated: false });
+        }
+    });
+
+    // ========================================
+    // GHOST CONTENT PROXY
+    // ========================================
+
+    // Proxy all other requests to Ghost CMS (with auth check)
+    app.use('/', requireAuth, requireLabels, async (req, res) => {
+        try {
+            // Build Ghost URL
+            const ghostUrl = `${GHOST_CONTENT_URL}${req.path}`;
+
+            // Forward request to Ghost
+            const response = await axios({
+                method: req.method,
+                url: ghostUrl,
+                headers: {
+                    ...req.headers,
+                    host: new URL(GHOST_CONTENT_URL).host,
+                },
+                params: req.query,
+                data: req.body,
+                responseType: 'stream',
+                validateStatus: () => true, // Don't throw on any status
+            });
+
+            // Copy status and headers
+            res.status(response.status);
+            Object.keys(response.headers).forEach(key => {
+                // Skip some headers that shouldn't be forwarded
+                if (!['connection', 'transfer-encoding', 'content-encoding'].includes(key.toLowerCase())) {
+                    res.set(key, response.headers[key]);
+                }
+            });
+
+            // Stream response
+            response.data.pipe(res);
+        } catch (error) {
+            console.error('Error proxying to Ghost:', error);
+            res.status(502).json({ error: 'Failed to fetch content' });
+        }
+    });
+
+    return app;
+}
+
+// Start server if run directly
+if (require.main === module) {
+    const app = createApp();
+    const PORT = process.env.PORT || 3002;
+
+    app.listen(PORT, () => {
+        console.log(`🔐 Insights Travel Intelligence Club server running on port ${PORT}`);
+        console.log(`📍 Sign in at: http://localhost:${PORT}/signin`);
+        console.log(`🌐 Environment: ${process.env.NODE_ENV || 'development'}`);
+        console.log(`📦 Database: ${USE_FIRESTORE ? 'Firestore' : 'SQLite'}`);
+    });
+}
+
+module.exports = { createApp };

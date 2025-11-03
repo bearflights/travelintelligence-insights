@@ -1,0 +1,276 @@
+const jwt = require('jsonwebtoken');
+const axios = require('axios');
+
+/**
+ * Ghost Admin API Integration
+ *
+ * This module handles all interactions with the Ghost Admin API for member management.
+ * Requires GHOST_ADMIN_API_KEY and GHOST_API_URL environment variables.
+ */
+
+class GhostAPI {
+    constructor(apiKey, apiUrl) {
+        if (!apiKey) {
+            throw new Error('GHOST_ADMIN_API_KEY is required');
+        }
+        if (!apiUrl) {
+            throw new Error('GHOST_API_URL is required');
+        }
+
+        // Parse the Admin API key (format: id:secret)
+        const [id, secret] = apiKey.split(':');
+        if (!id || !secret) {
+            throw new Error('Invalid Ghost Admin API key format. Expected "id:secret"');
+        }
+
+        this.keyId = id;
+        this.keySecret = Buffer.from(secret, 'hex');
+        this.apiUrl = apiUrl.replace(/\/$/, ''); // Remove trailing slash
+        this.apiVersion = 'v5.0'; // Ghost API version
+    }
+
+    /**
+     * Generate a JWT token for Ghost Admin API authentication
+     * Tokens are valid for 5 minutes
+     */
+    generateToken() {
+        const now = Math.floor(Date.now() / 1000);
+
+        const payload = {
+            iat: now,
+            exp: now + (5 * 60), // 5 minutes
+            aud: '/admin/'
+        };
+
+        const token = jwt.sign(payload, this.keySecret, {
+            algorithm: 'HS256',
+            keyid: this.keyId,
+            header: {
+                typ: 'JWT',
+                alg: 'HS256',
+                kid: this.keyId
+            }
+        });
+
+        return token;
+    }
+
+    /**
+     * Make an authenticated request to the Ghost Admin API
+     */
+    async makeRequest(method, endpoint, data = null) {
+        const token = this.generateToken();
+        const url = `${this.apiUrl}/ghost/api/admin${endpoint}`;
+
+        const config = {
+            method,
+            url,
+            headers: {
+                'Authorization': `Ghost ${token}`,
+                'Content-Type': 'application/json',
+                'Accept-Version': this.apiVersion
+            }
+        };
+
+        if (data) {
+            config.data = data;
+        }
+
+        try {
+            const response = await axios(config);
+            return response.data;
+        } catch (error) {
+            console.error('Ghost API Error:', {
+                status: error.response?.status,
+                message: error.response?.data?.errors?.[0]?.message || error.message,
+                endpoint
+            });
+            throw error;
+        }
+    }
+
+    /**
+     * Create or update a member in Ghost
+     *
+     * @param {Object} memberData - Member information
+     * @param {string} memberData.email - Member email (required)
+     * @param {string} memberData.name - Member full name
+     * @param {Array<string>} memberData.labels - Array of label names
+     * @param {string} memberData.note - Optional note to store
+     * @returns {Object} Created or updated member
+     */
+    async createOrUpdateMember({ email, name, labels = [], note = '' }) {
+        if (!email) {
+            throw new Error('Email is required to create a member');
+        }
+
+        // First, try to find if the member already exists
+        let existingMember = null;
+        try {
+            const searchResult = await this.makeRequest('GET', `/members/?filter=email:'${email}'`);
+            if (searchResult.members && searchResult.members.length > 0) {
+                existingMember = searchResult.members[0];
+                console.log(`Found existing member: ${email} (${existingMember.id})`);
+            }
+        } catch (error) {
+            console.log('Error searching for member:', error.message);
+        }
+
+        // Prepare member data
+        const memberPayload = {
+            members: [{
+                email,
+                name: name || email.split('@')[0]
+            }]
+        };
+
+        // Add labels
+        if (labels.length > 0) {
+            memberPayload.members[0].labels = labels.map(label => ({ name: label }));
+        } else {
+            memberPayload.members[0].labels = [];
+        }
+
+        // Add note if provided
+        if (note) {
+            memberPayload.members[0].note = note;
+        }
+
+        try {
+            if (existingMember) {
+                // Update existing member
+                console.log(`Updating member: ${email}`);
+
+                // Merge existing labels with new ones
+                const existingLabels = existingMember.labels || [];
+                const newLabels = labels.map(label => ({ name: label }));
+
+                // Combine labels, avoiding duplicates
+                const allLabels = [...existingLabels];
+                newLabels.forEach(newLabel => {
+                    if (!allLabels.some(l => l.name === newLabel.name)) {
+                        allLabels.push(newLabel);
+                    }
+                });
+
+                memberPayload.members[0].labels = allLabels;
+
+                const result = await this.makeRequest('PUT', `/members/${existingMember.id}/`, memberPayload);
+                console.log(`✅ Successfully updated member: ${email}`);
+                return { member: result.members[0], isNew: false };
+
+            } else {
+                // Create new member
+                console.log(`Creating new member: ${email}`);
+
+                const result = await this.makeRequest('POST', '/members/', memberPayload);
+                console.log(`✅ Successfully created member: ${email}`);
+                return { member: result.members[0], isNew: true };
+            }
+        } catch (error) {
+            // Handle specific Ghost API errors
+            if (error.response?.status === 422) {
+                const errorMsg = error.response?.data?.errors?.[0]?.message;
+                if (errorMsg && errorMsg.includes('already exists')) {
+                    console.log('Member already exists, attempting to fetch...');
+                    const searchResult = await this.makeRequest('GET', `/members/?filter=email:'${email}'`);
+                    if (searchResult.members && searchResult.members.length > 0) {
+                        return { member: searchResult.members[0], isNew: false };
+                    }
+                }
+            }
+            throw error;
+        }
+    }
+
+    /**
+     * Get a member by email
+     */
+    async getMemberByEmail(email) {
+        const result = await this.makeRequest('GET', `/members/?filter=email:'${email}'`);
+        return result.members?.[0] || null;
+    }
+
+    /**
+     * Get all members
+     */
+    async getAllMembers(limit = 100) {
+        const result = await this.makeRequest('GET', `/members/?limit=${limit}`);
+        return result.members || [];
+    }
+
+    /**
+     * Delete a member by ID
+     * @param {string} memberId - The Ghost member ID
+     */
+    async deleteMember(memberId) {
+        if (!memberId) {
+            throw new Error('Member ID is required to delete a member');
+        }
+
+        try {
+            await this.makeRequest('DELETE', `/members/${memberId}/`);
+            console.log(`✅ Successfully deleted member: ${memberId}`);
+            return true;
+        } catch (error) {
+            console.error(`Failed to delete member ${memberId}:`, error.message);
+            throw error;
+        }
+    }
+
+    /**
+     * Create a label if it doesn't exist
+     */
+    async createLabel(name) {
+        try {
+            const result = await this.makeRequest('POST', '/labels/', {
+                labels: [{ name }]
+            });
+            console.log(`✅ Created label: ${name}`);
+            return result.labels[0];
+        } catch (error) {
+            if (error.response?.status === 422) {
+                console.log(`Label "${name}" already exists`);
+                return null;
+            }
+            throw error;
+        }
+    }
+
+    /**
+     * Initialize Ghost labels for member roles
+     */
+    async initializeLabels() {
+        const labels = ['bear-waitlist', 'builder', 'patron', 'buccaneer', 'explorer'];
+        console.log('Initializing Ghost member labels...');
+
+        for (const label of labels) {
+            await this.createLabel(label);
+        }
+
+        console.log('✅ All labels initialized');
+    }
+}
+
+// Export a singleton instance
+let ghostAPIInstance = null;
+
+function getGhostAPI() {
+    if (!ghostAPIInstance) {
+        const apiKey = process.env.GHOST_ADMIN_API_KEY;
+        const apiUrl = process.env.GHOST_API_URL || 'https://insights.travelintelligence.club';
+
+        if (!apiKey) {
+            throw new Error('GHOST_ADMIN_API_KEY environment variable is not set');
+        }
+
+        ghostAPIInstance = new GhostAPI(apiKey, apiUrl);
+    }
+
+    return ghostAPIInstance;
+}
+
+module.exports = {
+    GhostAPI,
+    getGhostAPI
+};
