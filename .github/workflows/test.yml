@@ -32,9 +32,6 @@ jobs:
           mkdir -p bear.flights
           mv sso bear.flights/sso
           mv insights travelintelligence.club
-          # Create symlink so @bear/sso can be resolved
-          mkdir -p travelintelligence.club/node_modules/@bear
-          ln -s $PWD/bear.flights/sso travelintelligence.club/node_modules/@bear/sso
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -47,9 +44,16 @@ jobs:
         working-directory: bear.flights/sso
         run: npm install
 
-      - name: Install dependencies
+      - name: Install insights dependencies
         working-directory: travelintelligence.club
         run: npm install
+
+      - name: Link SSO package
+        run: |
+          # Ensure node_modules/@bear exists
+          mkdir -p travelintelligence.club/node_modules/@bear
+          # Copy (not symlink) SSO to node_modules
+          cp -r bear.flights/sso travelintelligence.club/node_modules/@bear/
 
       - name: Run test suite
         working-directory: travelintelligence.club
