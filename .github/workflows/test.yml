@@ -42,7 +42,7 @@ jobs:
 
       - name: Install SSO dependencies
         working-directory: bear.flights/sso
-        run: npm ci
+        run: npm install
 
       - name: Install dependencies
         working-directory: travelintelligence.club
