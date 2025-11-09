@@ -50,9 +50,11 @@ jobs:
 
       - name: Link SSO package
         run: |
+          # Remove the symlink/file that npm install created
+          rm -rf travelintelligence.club/node_modules/@bear/sso
           # Ensure node_modules/@bear exists
           mkdir -p travelintelligence.club/node_modules/@bear
-          # Copy (not symlink) SSO to node_modules
+          # Copy SSO package with its installed dependencies
           cp -r bear.flights/sso travelintelligence.club/node_modules/@bear/
 
       - name: Run test suite
