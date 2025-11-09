@@ -46,7 +46,7 @@ jobs:
 
       - name: Install dependencies
         working-directory: travelintelligence.club
-        run: npm ci
+        run: npm install
 
       - name: Run test suite
         working-directory: travelintelligence.club
