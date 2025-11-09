@@ -7,6 +7,8 @@ steps:
       - 'gcr.io/$PROJECT_ID/insights-travelintelligence:$BUILD_ID'
       - '-t'
       - 'gcr.io/$PROJECT_ID/insights-travelintelligence:latest'
+      - '-f'
+      - 'Dockerfile'
       - '.'
 
   # Push the container image to Container Registry

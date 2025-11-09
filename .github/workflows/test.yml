@@ -1,0 +1,106 @@
+name: CI/CD Pipeline
+
+# Automated CI/CD pipeline for Travel Intelligence Club Insights site
+# All permissions configured: Cloud Build, Artifact Registry, Secret Manager
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:  # Allow manual trigger
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          path: insights
+
+      - name: Checkout SSO package
+        uses: actions/checkout@v4
+        with:
+          repository: bearflights/sso
+          path: sso
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Setup directory structure
+        run: |
+          mkdir -p bear.flights
+          mv sso bear.flights/sso
+          mv insights travelintelligence.club
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          cache: 'npm'
+          cache-dependency-path: travelintelligence.club/package-lock.json
+
+      - name: Install SSO dependencies
+        working-directory: bear.flights/sso
+        run: npm ci
+
+      - name: Install dependencies
+        working-directory: travelintelligence.club
+        run: npm ci
+
+      - name: Run test suite
+        working-directory: travelintelligence.club
+        run: npm test
+        continue-on-error: false
+
+  deploy:
+    name: Deploy to Cloud Run
+    runs-on: ubuntu-latest
+    needs: test
+    # Only deploy on push to main (not PRs)
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    permissions:
+      contents: read
+      id-token: write  # Required for Workload Identity Federation
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          path: insights
+
+      - name: Checkout SSO package
+        uses: actions/checkout@v4
+        with:
+          repository: bearflights/sso
+          path: sso
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Setup build context directory structure
+        run: |
+          mkdir -p build-context/bear.flights/sso
+          mkdir -p build-context/travelintelligence.club
+          # Copy SSO package
+          cp -r sso/* build-context/bear.flights/sso/
+          # Copy insights project
+          cp -r insights/* build-context/travelintelligence.club/
+          # Copy Dockerfile to root of build context
+          cp insights/Dockerfile build-context/
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: 'projects/${{ secrets.GCP_PROJECT_NUMBER }}/locations/global/workloadIdentityPools/github-actions-pool/providers/github-provider'
+          service_account: 'github-actions-deployer@travelintelligence-landing.iam.gserviceaccount.com'
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: 'travelintelligence-landing'
+
+      - name: Build and deploy to Cloud Run
+        working-directory: build-context
+        run: |
+          gcloud builds submit \
+            --config=travelintelligence.club/cloudbuild.yaml \
+            --substitutions=_SERVICE_NAME=travelintelligence-insights-site

@@ -1,0 +1,397 @@
+# Reusable GitHub Actions Workflow for Cloud Run Deployment
+# Based on design document B-109
+# For usage instructions, see examples in workflow-design.md
+
+name: Deploy to Cloud Run
+
+on:
+  workflow_call:
+    inputs:
+      # Required Parameters
+      service-name:
+        description: 'Name of the Cloud Run service'
+        required: true
+        type: string
+      gcp-project-id:
+        description: 'GCP project ID'
+        required: true
+        type: string
+      region:
+        description: 'Cloud Run region'
+        required: true
+        type: string
+
+      # Optional - Build Configuration
+      dockerfile-path:
+        description: 'Path to Dockerfile'
+        required: false
+        type: string
+        default: './Dockerfile'
+      docker-context:
+        description: 'Docker build context directory'
+        required: false
+        type: string
+        default: '.'
+      build-args:
+        description: 'Docker build arguments (multiline)'
+        required: false
+        type: string
+        default: ''
+
+      # Optional - Deployment Configuration
+      port:
+        description: 'Container port'
+        required: false
+        type: number
+        default: 8080
+      memory:
+        description: 'Memory limit (e.g., 512Mi, 1Gi)'
+        required: false
+        type: string
+        default: '512Mi'
+      cpu:
+        description: 'CPU allocation'
+        required: false
+        type: number
+        default: 1
+      timeout:
+        description: 'Request timeout in seconds'
+        required: false
+        type: number
+        default: 300
+      min-instances:
+        description: 'Minimum number of instances'
+        required: false
+        type: number
+        default: 0
+      max-instances:
+        description: 'Maximum number of instances'
+        required: false
+        type: number
+        default: 10
+      allow-unauthenticated:
+        description: 'Allow public access without authentication'
+        required: false
+        type: boolean
+        default: true
+
+      # Optional - Environment & Secrets
+      env-vars:
+        description: 'Environment variables (comma-separated KEY=value pairs)'
+        required: false
+        type: string
+        default: ''
+      gcp-secrets:
+        description: 'Secret Manager secrets (comma-separated KEY=SECRET_NAME:version)'
+        required: false
+        type: string
+        default: ''
+
+      # Optional - Advanced Configuration
+      cloudbuild-timeout:
+        description: 'Cloud Build timeout (e.g., 1200s)'
+        required: false
+        type: string
+        default: '1200s'
+      machine-type:
+        description: 'Cloud Build machine type'
+        required: false
+        type: string
+        default: 'N1_HIGHCPU_8'
+
+    outputs:
+      service-url:
+        description: 'URL of the deployed Cloud Run service'
+        value: ${{ jobs.deploy.outputs.service-url }}
+      revision-name:
+        description: 'Name of the deployed revision'
+        value: ${{ jobs.deploy.outputs.revision-name }}
+      previous-revision:
+        description: 'Previous revision (for rollback reference)'
+        value: ${{ jobs.deploy.outputs.previous-revision }}
+      deployment-status:
+        description: 'Final deployment status'
+        value: ${{ jobs.deploy.outputs.deployment-status }}
+      build-id:
+        description: 'Cloud Build ID'
+        value: ${{ jobs.deploy.outputs.build-id }}
+
+jobs:
+  deploy:
+    name: Deploy to Cloud Run
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write  # Required for Workload Identity Federation
+
+    outputs:
+      service-url: ${{ steps.deploy.outputs.service-url }}
+      revision-name: ${{ steps.deploy.outputs.revision-name }}
+      previous-revision: ${{ steps.deploy.outputs.previous-revision }}
+      deployment-status: ${{ steps.verify.outputs.deployment-status }}
+      build-id: ${{ steps.build.outputs.build-id }}
+
+    steps:
+      # Step 1: Checkout code
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # Step 2: Authenticate to Google Cloud using Workload Identity
+      - name: Authenticate to Google Cloud
+        id: auth
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: 'projects/${{ secrets.GCP_PROJECT_NUMBER }}/locations/global/workloadIdentityPools/github-actions-pool/providers/github-provider'
+          service_account: 'github-actions-deployer@${{ inputs.gcp-project-id }}.iam.gserviceaccount.com'
+
+      # Step 3: Set up Cloud SDK
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: ${{ inputs.gcp-project-id }}
+
+      # Step 4: Build and push Docker image using Cloud Build
+      - name: Build and push Docker image
+        id: build
+        run: |
+          # Generate dynamic cloudbuild.yaml
+          cat > cloudbuild-temp.yaml <<'EOF'
+          steps:
+            # Build Docker image
+            - name: 'gcr.io/cloud-builders/docker'
+              args:
+                - 'build'
+                - '-t'
+                - 'gcr.io/${{ inputs.gcp-project-id }}/${{ inputs.service-name }}:${{ github.sha }}'
+                - '-t'
+                - 'gcr.io/${{ inputs.gcp-project-id }}/${{ inputs.service-name }}:latest'
+                - '-f'
+                - '${{ inputs.dockerfile-path }}'
+          EOF
+
+          # Add build args if provided
+          if [ -n "${{ inputs.build-args }}" ]; then
+            echo "${{ inputs.build-args }}" | while IFS= read -r arg; do
+              if [ -n "$arg" ]; then
+                echo "                - '--build-arg'" >> cloudbuild-temp.yaml
+                echo "                - '$arg'" >> cloudbuild-temp.yaml
+              fi
+            done
+          fi
+
+          # Complete the build step
+          cat >> cloudbuild-temp.yaml <<'EOF'
+                - '${{ inputs.docker-context }}'
+
+            # Push image with commit SHA tag
+            - name: 'gcr.io/cloud-builders/docker'
+              args:
+                - 'push'
+                - 'gcr.io/${{ inputs.gcp-project-id }}/${{ inputs.service-name }}:${{ github.sha }}'
+
+            # Push latest tag
+            - name: 'gcr.io/cloud-builders/docker'
+              args:
+                - 'push'
+                - 'gcr.io/${{ inputs.gcp-project-id }}/${{ inputs.service-name }}:latest'
+
+          images:
+            - 'gcr.io/${{ inputs.gcp-project-id }}/${{ inputs.service-name }}:${{ github.sha }}'
+            - 'gcr.io/${{ inputs.gcp-project-id }}/${{ inputs.service-name }}:latest'
+
+          options:
+            machineType: '${{ inputs.machine-type }}'
+            logging: CLOUD_LOGGING_ONLY
+
+          timeout: '${{ inputs.cloudbuild-timeout }}'
+          EOF
+
+          echo "Generated cloudbuild.yaml:"
+          cat cloudbuild-temp.yaml
+
+          # Submit build to Cloud Build
+          echo "Submitting build to Cloud Build..."
+          gcloud builds submit \
+            --config=cloudbuild-temp.yaml \
+            --async
+
+          # Get the most recent build ID
+          sleep 5  # Give Cloud Build a moment to register the build
+          BUILD_ID=$(gcloud builds list --limit=1 --format="value(id)")
+          echo "build-id=${BUILD_ID}" >> $GITHUB_OUTPUT
+          echo "Build ID: ${BUILD_ID}"
+
+          # Stream build logs and wait for completion
+          echo "Streaming build logs..."
+          gcloud builds log --stream "${BUILD_ID}"
+
+          # Check build status
+          BUILD_STATUS=$(gcloud builds describe "${BUILD_ID}" --format="value(status)")
+          if [ "${BUILD_STATUS}" != "SUCCESS" ]; then
+            echo "::error::Cloud Build failed with status: ${BUILD_STATUS}"
+            echo "View build logs: https://console.cloud.google.com/cloud-build/builds/${BUILD_ID}?project=${{ inputs.gcp-project-id }}"
+            exit 1
+          fi
+
+          echo "Build completed successfully!"
+
+      # Step 5: Deploy to Cloud Run
+      - name: Deploy to Cloud Run
+        id: deploy
+        run: |
+          # Capture current revision before deployment (for rollback)
+          echo "Checking for existing service..."
+          PREVIOUS_REVISION=$(gcloud run services describe "${{ inputs.service-name }}" \
+            --region="${{ inputs.region }}" \
+            --format='value(status.latestReadyRevisionName)' \
+            2>/dev/null || echo "none")
+
+          echo "previous-revision=${PREVIOUS_REVISION}" >> $GITHUB_OUTPUT
+          if [ "${PREVIOUS_REVISION}" = "none" ]; then
+            echo "First deployment of this service"
+          else
+            echo "Previous revision: ${PREVIOUS_REVISION}"
+          fi
+
+          # Build deployment command
+          DEPLOY_CMD="gcloud run deploy ${{ inputs.service-name }}"
+          DEPLOY_CMD="${DEPLOY_CMD} --image=gcr.io/${{ inputs.gcp-project-id }}/${{ inputs.service-name }}:${{ github.sha }}"
+          DEPLOY_CMD="${DEPLOY_CMD} --region=${{ inputs.region }}"
+          DEPLOY_CMD="${DEPLOY_CMD} --platform=managed"
+          DEPLOY_CMD="${DEPLOY_CMD} --port=${{ inputs.port }}"
+          DEPLOY_CMD="${DEPLOY_CMD} --memory=${{ inputs.memory }}"
+          DEPLOY_CMD="${DEPLOY_CMD} --cpu=${{ inputs.cpu }}"
+          DEPLOY_CMD="${DEPLOY_CMD} --min-instances=${{ inputs.min-instances }}"
+          DEPLOY_CMD="${DEPLOY_CMD} --max-instances=${{ inputs.max-instances }}"
+          DEPLOY_CMD="${DEPLOY_CMD} --timeout=${{ inputs.timeout }}"
+
+          # Add authentication flag
+          if [ "${{ inputs.allow-unauthenticated }}" = "true" ]; then
+            DEPLOY_CMD="${DEPLOY_CMD} --allow-unauthenticated"
+          else
+            DEPLOY_CMD="${DEPLOY_CMD} --no-allow-unauthenticated"
+          fi
+
+          # Add environment variables if provided
+          if [ -n "${{ inputs.env-vars }}" ]; then
+            DEPLOY_CMD="${DEPLOY_CMD} --set-env-vars=${{ inputs.env-vars }}"
+          fi
+
+          # Add secrets if provided
+          if [ -n "${{ inputs.gcp-secrets }}" ]; then
+            DEPLOY_CMD="${DEPLOY_CMD} --set-secrets=${{ inputs.gcp-secrets }}"
+          fi
+
+          # Execute deployment
+          echo "Deploying to Cloud Run..."
+          echo "Command: ${DEPLOY_CMD}"
+          eval "${DEPLOY_CMD}"
+
+          # Capture new revision info
+          NEW_REVISION=$(gcloud run services describe "${{ inputs.service-name }}" \
+            --region="${{ inputs.region }}" \
+            --format='value(status.latestReadyRevisionName)')
+          echo "revision-name=${NEW_REVISION}" >> $GITHUB_OUTPUT
+          echo "New revision: ${NEW_REVISION}"
+
+          # Get service URL
+          SERVICE_URL=$(gcloud run services describe "${{ inputs.service-name }}" \
+            --region="${{ inputs.region }}" \
+            --format='value(status.url)')
+          echo "service-url=${SERVICE_URL}" >> $GITHUB_OUTPUT
+          echo "Service URL: ${SERVICE_URL}"
+
+      # Step 6: Verify deployment health
+      - name: Verify deployment
+        id: verify
+        run: |
+          SERVICE_URL="${{ steps.deploy.outputs.service-url }}"
+
+          # Wait for revision to be fully ready
+          echo "Waiting for revision to be ready..."
+          TIMEOUT=300  # 5 minutes
+          ELAPSED=0
+          INTERVAL=5
+
+          while [ $ELAPSED -lt $TIMEOUT ]; do
+            # Check if all conditions are True
+            CONDITIONS=$(gcloud run services describe "${{ inputs.service-name }}" \
+              --region="${{ inputs.region }}" \
+              --format="value(status.conditions.status)")
+
+            if echo "${CONDITIONS}" | grep -qE "True.*True.*True"; then
+              echo "Service is ready!"
+              break
+            fi
+
+            echo "Waiting for service to be ready... (${ELAPSED}s/${TIMEOUT}s)"
+            sleep $INTERVAL
+            ELAPSED=$((ELAPSED + INTERVAL))
+          done
+
+          if [ $ELAPSED -ge $TIMEOUT ]; then
+            echo "::error::Timeout waiting for service to be ready"
+            exit 1
+          fi
+
+          # Perform HTTP health check
+          echo "Performing health check at ${SERVICE_URL}"
+          HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" "${SERVICE_URL}" || echo "000")
+
+          echo "HTTP Status: ${HTTP_STATUS}"
+
+          if [ "${HTTP_STATUS}" = "000" ]; then
+            echo "::error::Service unreachable at ${SERVICE_URL}"
+            echo "deployment-status=failed" >> $GITHUB_OUTPUT
+            exit 1
+          elif [ "${HTTP_STATUS:0:1}" = "5" ]; then
+            echo "::error::Service returned 5xx error: ${HTTP_STATUS}"
+            echo "deployment-status=failed" >> $GITHUB_OUTPUT
+            exit 1
+          else
+            echo "Service is responding successfully (HTTP ${HTTP_STATUS})"
+            echo "deployment-status=success" >> $GITHUB_OUTPUT
+          fi
+
+      # Step 7: Rollback on failure
+      - name: Rollback on failure
+        if: failure() && steps.deploy.outputs.previous-revision != 'none'
+        run: |
+          echo "::warning::Deployment failed, initiating rollback..."
+          echo "Rolling back to previous revision: ${{ steps.deploy.outputs.previous-revision }}"
+
+          gcloud run services update-traffic "${{ inputs.service-name }}" \
+            --region="${{ inputs.region }}" \
+            --to-revisions="${{ steps.deploy.outputs.previous-revision }}=100"
+
+          echo "::notice::Rollback complete. Service is running previous revision."
+          echo "::notice::The workflow will still fail to indicate the deployment issue."
+
+      # Step 8: Create deployment summary
+      - name: Create deployment summary
+        if: always()
+        run: |
+          echo "## Deployment Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Field | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|-------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| **Service** | \`${{ inputs.service-name }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Project** | \`${{ inputs.gcp-project-id }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Region** | \`${{ inputs.region }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Status** | \`${{ job.status }}\` |" >> $GITHUB_STEP_SUMMARY
+
+          if [ "${{ job.status }}" = "success" ]; then
+            echo "| **URL** | ${{ steps.deploy.outputs.service-url }} |" >> $GITHUB_STEP_SUMMARY
+            echo "| **Revision** | \`${{ steps.deploy.outputs.revision-name }}\` |" >> $GITHUB_STEP_SUMMARY
+            echo "| **Commit** | \`${{ github.sha }}\` |" >> $GITHUB_STEP_SUMMARY
+            echo "| **Build ID** | \`${{ steps.build.outputs.build-id }}\` |" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "### Deployment successful!" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "| **Previous Revision** | \`${{ steps.deploy.outputs.previous-revision }}\` |" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "### Deployment failed" >> $GITHUB_STEP_SUMMARY
+            if [ "${{ steps.deploy.outputs.previous-revision }}" != "none" ]; then
+              echo "Service has been rolled back to the previous revision." >> $GITHUB_STEP_SUMMARY
+            fi
+          fi
