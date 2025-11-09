@@ -32,6 +32,9 @@ jobs:
           mkdir -p bear.flights
           mv sso bear.flights/sso
           mv insights travelintelligence.club
+          # Create symlink so @bear/sso can be resolved
+          mkdir -p travelintelligence.club/node_modules/@bear
+          ln -s $PWD/bear.flights/sso travelintelligence.club/node_modules/@bear/sso
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
