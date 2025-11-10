@@ -111,5 +111,4 @@ jobs:
         working-directory: build-context
         run: |
           gcloud builds submit \
-            --config=travelintelligence.club/cloudbuild.yaml \
-            --substitutions=_SERVICE_NAME=travelintelligence-insights-site
+            --config=travelintelligence.club/cloudbuild.yaml
