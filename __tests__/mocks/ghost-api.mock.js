@@ -34,8 +34,8 @@ const mockGhostAPI = {
    */
   resetMocks: () => {
     Object.keys(mockGhostAPI).forEach(key => {
-      if (typeof mockGhostAPI[key] === 'function' && mockGhostAPI[key].mockReset) {
-        mockGhostAPI[key].mockReset();
+      if (typeof mockGhostAPI[key] === 'function' && mockGhostAPI[key].mockClear) {
+        mockGhostAPI[key].mockClear();
       }
     });
   }

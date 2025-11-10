@@ -39,11 +39,11 @@ const mockEmailVerification = {
    */
   resetMocks: () => {
     Object.keys(mockEmailVerification).forEach(key => {
-      if (typeof mockEmailVerification[key] === 'function' && mockEmailVerification[key].mockReset) {
-        mockEmailVerification[key].mockReset();
+      if (typeof mockEmailVerification[key] === 'function' && mockEmailVerification[key].mockClear) {
+        mockEmailVerification[key].mockClear();
       }
     });
-    // Reset default implementations
+    // Ensure default implementations are set
     mockEmailVerification.generateCode.mockReturnValue('123456');
     mockEmailVerification.sendVerificationEmail.mockResolvedValue({ success: true });
     mockEmailVerification.storeCode.mockResolvedValue(true);

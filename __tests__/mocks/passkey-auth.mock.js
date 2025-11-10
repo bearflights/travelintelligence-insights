@@ -71,46 +71,39 @@ const mockPasskeyAuth = {
    */
   resetMocks: () => {
     Object.keys(mockPasskeyAuth).forEach(key => {
-      if (typeof mockPasskeyAuth[key] === 'function' && mockPasskeyAuth[key].mockReset) {
-        mockPasskeyAuth[key].mockReset();
-
-        // Restore default implementations
-        switch (key) {
-          case 'generateRegistration':
-            mockPasskeyAuth[key].mockResolvedValue({
-              challenge: 'mock-challenge-123',
-              rp: { name: 'Test RP', id: 'test.local' },
-              user: { id: Buffer.from('test-user-id'), name: 'test@example.com', displayName: 'Test User' },
-              pubKeyCredParams: [{ alg: -7, type: 'public-key' }],
-              timeout: 60000
-            });
-            break;
-          case 'verifyRegistration':
-            mockPasskeyAuth[key].mockResolvedValue({
-              verified: true,
-              registrationInfo: {
-                credentialPublicKey: Buffer.from('mock-public-key'),
-                credentialID: Buffer.from('mock-credential-id'),
-                counter: 0
-              }
-            });
-            break;
-          case 'generateAuthentication':
-            mockPasskeyAuth[key].mockResolvedValue({
-              challenge: 'mock-auth-challenge-123',
-              allowCredentials: [],
-              timeout: 60000
-            });
-            break;
-          case 'verifyAuthentication':
-            mockPasskeyAuth[key].mockResolvedValue({
-              verified: true,
-              email: 'test@example.com',
-              authenticationInfo: { newCounter: 1 }
-            });
-            break;
-        }
+      if (typeof mockPasskeyAuth[key] === 'function' && mockPasskeyAuth[key].mockClear) {
+        mockPasskeyAuth[key].mockClear();
       }
+    });
+
+    // Ensure default implementations are set
+    mockPasskeyAuth.generateRegistration.mockResolvedValue({
+      challenge: 'mock-challenge-123',
+      rp: { name: 'Test RP', id: 'test.local' },
+      user: { id: Buffer.from('test-user-id'), name: 'test@example.com', displayName: 'Test User' },
+      pubKeyCredParams: [{ alg: -7, type: 'public-key' }],
+      timeout: 60000
+    });
+
+    mockPasskeyAuth.verifyRegistration.mockResolvedValue({
+      verified: true,
+      registrationInfo: {
+        credentialPublicKey: Buffer.from('mock-public-key'),
+        credentialID: Buffer.from('mock-credential-id'),
+        counter: 0
+      }
+    });
+
+    mockPasskeyAuth.generateAuthentication.mockResolvedValue({
+      challenge: 'mock-auth-challenge-123',
+      allowCredentials: [],
+      timeout: 60000
+    });
+
+    mockPasskeyAuth.verifyAuthentication.mockResolvedValue({
+      verified: true,
+      email: 'test@example.com',
+      authenticationInfo: { newCounter: 1 }
     });
   }
 };
