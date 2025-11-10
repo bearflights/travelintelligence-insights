@@ -17,22 +17,27 @@ const {
 // Use Firestore for production (Cloud Run), fallback to SQLite for local dev
 const USE_FIRESTORE = process.env.NODE_ENV === 'production' || process.env.USE_FIRESTORE === 'true';
 
-// Conditionally require database layer
-let passkeyQueries, challengeQueries, verificationCodeQueries;
-if (USE_FIRESTORE) {
-    const firestoreDb = require('@bear/sso/lib/firestore-db');
-    passkeyQueries = firestoreDb.passkeyQueries;
-    challengeQueries = firestoreDb.challengeQueries;
-    verificationCodeQueries = firestoreDb.verificationCodeQueries;
-} else {
-    const sqliteDb = require('./lib/db');
-    passkeyQueries = sqliteDb.passkeyQueries;
-    challengeQueries = sqliteDb.challengeQueries;
-    verificationCodeQueries = sqliteDb.verificationCodeQueries;
+// Conditionally require database layer (default databases)
+function getDefaultDatabaseQueries() {
+    if (USE_FIRESTORE) {
+        const firestoreDb = require('@bear/sso/lib/firestore-db');
+        return {
+            passkeyQueries: firestoreDb.passkeyQueries,
+            challengeQueries: firestoreDb.challengeQueries,
+            verificationCodeQueries: firestoreDb.verificationCodeQueries
+        };
+    } else {
+        const sqliteDb = require('./lib/db');
+        return {
+            passkeyQueries: sqliteDb.passkeyQueries,
+            challengeQueries: sqliteDb.challengeQueries,
+            verificationCodeQueries: sqliteDb.verificationCodeQueries
+        };
+    }
 }
 
 // Create Express app
-function createApp(testMode = false) {
+function createApp(testMode = false, dependencies = {}) {
     const app = express();
 
     // Load environment variables
@@ -75,8 +80,16 @@ function createApp(testMode = false) {
     // Static file serving for auth pages
     app.use('/static', express.static(path.join(__dirname, 'public')));
 
-    // Initialize shared library instances
-    const emailVerification = testMode ? {
+    // Initialize database queries (with dependency injection support)
+    const defaultDb = getDefaultDatabaseQueries();
+    const passkeyQueries = dependencies.passkeyQueries || defaultDb.passkeyQueries;
+    const challengeQueries = dependencies.challengeQueries || defaultDb.challengeQueries;
+    const verificationCodeQueries = dependencies.verificationCodeQueries || defaultDb.verificationCodeQueries;
+
+    // Initialize shared library instances (with dependency injection support)
+    const ghostAPI = dependencies.ghostAPI || getGhostAPI();
+
+    const emailVerification = dependencies.emailVerification || (testMode ? {
         generateCode: () => Math.floor(100000 + Math.random() * 900000).toString(),
         sendVerificationEmail: async (email, name, code) => {
             console.log(`[TEST] Sending email to ${email} with code ${code}`);
@@ -116,7 +129,7 @@ function createApp(testMode = false) {
         brevoApiKey: process.env.BREVO_API_KEY,
         fromEmail: process.env.BREVO_FROM_EMAIL,
         fromName: process.env.BREVO_FROM_NAME || 'Travel Intelligence Club'
-    });
+    }));
 
     // Custom HTML template for verification emails
     const emailTemplate = (email, name, code, appName) => `
@@ -135,8 +148,8 @@ function createApp(testMode = false) {
         </div>
     `;
 
-    // Initialize PasskeyAuth from shared library
-    const passkeyAuth = getPasskeyAuth({
+    // Initialize PasskeyAuth from shared library (with dependency injection support)
+    const passkeyAuth = dependencies.passkeyAuth || getPasskeyAuth({
         rpName: RP_NAME,
         rpID: RP_ID,
         origin: ORIGIN
@@ -233,7 +246,6 @@ function createApp(testMode = false) {
             }
 
             // Check if user exists in Ghost
-            const ghostAPI = getGhostAPI();
             const member = await ghostAPI.getMemberByEmail(email);
 
             if (!member) {
@@ -281,7 +293,6 @@ function createApp(testMode = false) {
             }
 
             // Get user from Ghost
-            const ghostAPI = getGhostAPI();
             const member = await ghostAPI.getMemberByEmail(email);
 
             if (!member) {
@@ -402,7 +413,6 @@ function createApp(testMode = false) {
             }
 
             // Get user from Ghost
-            const ghostAPI = getGhostAPI();
             const member = await ghostAPI.getMemberByEmail(result.email);
 
             if (!member) {

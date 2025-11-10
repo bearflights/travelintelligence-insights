@@ -7,7 +7,7 @@ const mockPasskeyAuth = {
   /**
    * Mock generating registration options
    */
-  generateRegistrationOptions: jest.fn().mockResolvedValue({
+  generateRegistration: jest.fn().mockResolvedValue({
     challenge: 'mock-challenge-123',
     rp: { name: 'Test RP', id: 'test.local' },
     user: {
@@ -31,7 +31,7 @@ const mockPasskeyAuth = {
   /**
    * Mock verifying registration response
    */
-  verifyRegistrationResponse: jest.fn().mockResolvedValue({
+  verifyRegistration: jest.fn().mockResolvedValue({
     verified: true,
     registrationInfo: {
       credentialPublicKey: Buffer.from('mock-public-key'),
@@ -43,7 +43,7 @@ const mockPasskeyAuth = {
   /**
    * Mock generating authentication options
    */
-  generateAuthenticationOptions: jest.fn().mockResolvedValue({
+  generateAuthentication: jest.fn().mockResolvedValue({
     challenge: 'mock-auth-challenge-123',
     allowCredentials: [{
       id: Buffer.from('mock-credential-id'),
@@ -57,8 +57,9 @@ const mockPasskeyAuth = {
   /**
    * Mock verifying authentication response
    */
-  verifyAuthenticationResponse: jest.fn().mockResolvedValue({
+  verifyAuthentication: jest.fn().mockResolvedValue({
     verified: true,
+    email: 'test@example.com',
     authenticationInfo: {
       newCounter: 1,
       credentialID: Buffer.from('mock-credential-id')
@@ -75,7 +76,7 @@ const mockPasskeyAuth = {
 
         // Restore default implementations
         switch (key) {
-          case 'generateRegistrationOptions':
+          case 'generateRegistration':
             mockPasskeyAuth[key].mockResolvedValue({
               challenge: 'mock-challenge-123',
               rp: { name: 'Test RP', id: 'test.local' },
@@ -84,7 +85,7 @@ const mockPasskeyAuth = {
               timeout: 60000
             });
             break;
-          case 'verifyRegistrationResponse':
+          case 'verifyRegistration':
             mockPasskeyAuth[key].mockResolvedValue({
               verified: true,
               registrationInfo: {
@@ -94,16 +95,17 @@ const mockPasskeyAuth = {
               }
             });
             break;
-          case 'generateAuthenticationOptions':
+          case 'generateAuthentication':
             mockPasskeyAuth[key].mockResolvedValue({
               challenge: 'mock-auth-challenge-123',
               allowCredentials: [],
               timeout: 60000
             });
             break;
-          case 'verifyAuthenticationResponse':
+          case 'verifyAuthentication':
             mockPasskeyAuth[key].mockResolvedValue({
               verified: true,
+              email: 'test@example.com',
               authenticationInfo: { newCounter: 1 }
             });
             break;
