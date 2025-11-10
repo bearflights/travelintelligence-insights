@@ -46,7 +46,7 @@ describe('Passkey Authentication Endpoints', () => {
     // Reset all mocks before each test
     mockGhostAPI.resetMocks();
     mockEmailVerification.resetMocks();
-    mockDb.resetTestData();
+    mockDb.resetMocks();
     mockPasskeyAuth.resetMocks();
 
     // Create app with injected dependencies
