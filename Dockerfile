@@ -32,8 +32,8 @@ FROM node:18-alpine
 WORKDIR /app
 
 # Copy from builder
-COPY --from=builder /build/bear.flights/sso /app/node_modules/@bear/sso
 COPY --from=builder /build/travelintelligence.club /app
+COPY --from=builder /build/bear.flights/sso /app/node_modules/@bear/sso
 
 # Expose port
 EXPOSE 3002
