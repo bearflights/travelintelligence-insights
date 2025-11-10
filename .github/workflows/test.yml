@@ -87,12 +87,12 @@ jobs:
 
       - name: Setup build context directory structure
         run: |
-          mkdir -p build-context/bear.flights/sso
-          mkdir -p build-context/travelintelligence.club
-          # Copy SSO package
-          cp -r sso/* build-context/bear.flights/sso/
+          mkdir -p build-context/bear.flights
+          mkdir -p build-context
+          # Copy SSO package (use . to copy all files including hidden ones)
+          cp -r sso build-context/bear.flights/
           # Copy insights project
-          cp -r insights/* build-context/travelintelligence.club/
+          cp -r insights build-context/travelintelligence.club
           # Copy Dockerfile to root of build context
           cp insights/Dockerfile build-context/
 
