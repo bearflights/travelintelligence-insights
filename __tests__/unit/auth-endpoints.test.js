@@ -9,7 +9,7 @@ const { createApp } = require('../../app');
 // Import mocks
 const { mockGhostAPI } = require('../mocks/ghost-api.mock');
 const { mockEmailVerification } = require('../mocks/email-verification.mock');
-const mockDb = require('../mocks/db.mock');
+const { mockDb } = require('../mocks/db.mock');
 const { mockPasskeyAuth } = require('../mocks/passkey-auth.mock');
 
 describe('Authentication Endpoints', () => {
